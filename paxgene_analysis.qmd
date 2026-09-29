@@ -1,0 +1,613 @@
+---
+title: "Blood PAXgene Transcriptomics Analysis aP vs wP vs Infection"
+author:
+  - name: Yihui Wang
+institute: "Merkel Lab"
+date: "02/26/2026"
+format: beamer
+resources:
+  - images/
+execute:
+  echo: false       
+  warning: false    
+  message: false    
+---
+
+## Introduction
+
+DOI aP and wP vaccinated animals during their vaccination phase (baseline, day1, day3, and day8 of first dose). Naive animals during challenge (baseline, day3, day7, day14)
+
+### load packages
+
+```{r}
+#| echo: true
+#| warning: false
+#| message: false
+
+library(pheatmap)
+library(corrplot)
+library(GSVA)
+library(GSEABase)
+library(gt)
+library(webshot2)
+library(ggrepel)
+library(ggplot2)
+library(DEFormats)
+library(tidyverse)
+library(edgeR)
+library(WGCNA)
+library(cowplot)
+library(CorLevelPlot)
+library(dplyr)
+library(gprofiler2)
+library(limma)
+library(biomaRt)
+library(RColorBrewer)
+library(tibble)
+library(DESeq2)
+library(ComplexHeatmap)
+library(circlize)
+library(clusterProfiler)
+library(enrichplot)
+
+myheatcolors3 <- brewer.pal(name="RdBu", n=11)
+
+```
+
+### set directory
+
+```{r}
+#| echo: false
+#| warning: false
+
+```
+
+## Load data
+
+### load count table and study design
+
+```{r}
+A.countData <- read.csv("counts.csv", header = TRUE)
+B.studydesign <- read.csv("studydesign.csv", header = TRUE)
+
+B.studydesign <- as.data.frame(B.studydesign)
+rownames(B.studydesign) <- B.studydesign$label
+A.countData <- as.data.frame(A.countData)
+rownames(A.countData) <- A.countData$gene_id
+A.countData <- A.countData[, -1]
+A.countData <- A.countData[, rownames(B.studydesign)]
+
+
+D.DGEList.countData <- DGEList(A.countData)
+
+```
+
+## Filtering and normalization
+
+```{r}
+#| echo: true
+#| results: "hide"
+#| warning: false
+
+E.cpm.countData <- cpm(D.DGEList.countData) 
+F.log2.cpm.countData <- cpm(D.DGEList.countData, log=TRUE)
+F.log2.cpm.countData.df <- as_tibble(F.log2.cpm.countData, rownames = NA)
+rownames_to_column(F.log2.cpm.countData.df)
+F.log2.cpm.countData.df.pivot <- pivot_longer(F.log2.cpm.countData.df,
+                                             cols = everything(),
+                                             names_to = "samples",
+                                             values_to = "expression")
+
+ggplot(F.log2.cpm.countData.df.pivot) +
+  aes(x=samples, y=expression, fill=samples) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +
+  stat_summary(fun = "median", 
+               geom = "point", 
+               shape = 95, 
+               size = 10, 
+               color = "black", 
+               show.legend = FALSE) +
+  labs(y="log2 expression", x = "sample",
+       title="Log2 Counts per Million (CPM)",
+       subtitle="unfiltered non-normalized gene level",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw()
+
+rm(F.log2.cpm.countData.df, F.log2.cpm.countData.df.pivot, F.log2.cpm.countData)
+```
+
+### how many genes has no expression in all samples
+
+```{r}
+#| echo: true
+#| warning: false
+
+table(rowSums(D.DGEList.countData$counts==0)==129)
+```
+
+### filter data
+
+```{r}
+#| echo: true
+#| warning: false
+design <- model.matrix(~ 0 + group + batch + sex, data=B.studydesign)
+G.keepers.countData <- filterByExpr(D.DGEList.countData, design = design)
+H.DGEList.countData.filtered <- D.DGEList.countData[G.keepers.countData,]
+dim(H.DGEList.countData.filtered)
+```
+
+Plot filtered data
+
+```{r}
+#| echo: true
+#| results: "hide"
+#| warning: false
+
+I.log2.cpm.countData.filtered <- cpm(H.DGEList.countData.filtered, log=TRUE)
+I.log2.cpm.countData.filtered.df <- as_tibble(I.log2.cpm.countData.filtered, rownames = NA)
+rownames_to_column(I.log2.cpm.countData.filtered.df)
+I.log2.cpm.countData.filtered.df.pivot <- pivot_longer(I.log2.cpm.countData.filtered.df,
+                                                       cols = everything(),
+                                                       names_to = "samples",
+                                              values_to = "expression")
+
+ggplot(I.log2.cpm.countData.filtered.df.pivot) +
+  aes(x=samples, y=expression, fill=samples) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +
+  stat_summary(fun = "median", 
+               geom = "point", 
+               shape = 95, 
+               size = 10, 
+               color = "black", 
+               show.legend = FALSE) +
+  labs(y="log2 expression", x = "sample",
+       title="Log2 Counts per Million (CPM)",
+       subtitle="filtered non-normalized gene level",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw()
+
+rm(I.log2.cpm.countData.filtered.df, I.log2.cpm.countData.filtered.df.pivot, I.log2.cpm.countData.filtered)
+```
+
+### normalization
+
+Using edgeR TMM method
+
+```{r}
+#| echo: true
+#| results: "hide"
+#| warning: false
+
+J.DGEList.countData.filtered.norm <- calcNormFactors(H.DGEList.countData.filtered, method = "TMM")
+K.log2.cpm.countData.filtered.norm <- cpm(J.DGEList.countData.filtered.norm, log=TRUE)
+K.log2.cpm.countData.filtered.norm.df <- as_tibble(K.log2.cpm.countData.filtered.norm, rownames = NA)
+rownames_to_column(K.log2.cpm.countData.filtered.norm.df)
+K.log2.cpm.countData.filtered.norm.df.pivot <- pivot_longer(K.log2.cpm.countData.filtered.norm.df,
+                                                            cols = everything(),
+                                                            names_to = "samples",
+                                                       values_to = "expression")
+
+ggplot(K.log2.cpm.countData.filtered.norm.df.pivot) +
+  aes(x=samples, y=expression, fill=samples) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +
+  stat_summary(fun = "median", 
+               geom = "point", 
+               shape = 95, 
+               size = 10, 
+               color = "black", 
+               show.legend = FALSE) +
+  labs(y="log2 expression", x = "sample",
+       title="Log2 Counts per Million (CPM)",
+       subtitle="filtered normalized (TMM) gene level",
+       caption=paste0("produced on ", Sys.time())) +
+  theme_bw()
+
+rm(K.log2.cpm.countData.filtered.norm.df.pivot, G.keepers.countData, E.cpm.countData, H.DGEList.countData.filtered)
+#save.image(file = "my_environment.RData")
+
+```
+
+## DGE
+### model the mean-variance relationship and fit a linear model to data
+
+```{r}
+#| echo: true
+#| warning: false
+#| message: false
+design <- model.matrix(~ 0 + group + batch + sex, data=B.studydesign)
+
+v1 <- voomWithQualityWeights(J.DGEList.countData.filtered.norm, design, plot = TRUE)
+
+corfit <- duplicateCorrelation(
+  v1,
+  design = design,
+  block  = B.studydesign$animal
+)
+corfit$consensus.correlation
+v2 <- voomWithQualityWeights(
+  J.DGEList.countData.filtered.norm,
+  design = design,
+  block  = B.studydesign$animal,
+  correlation = corfit$consensus.correlation,
+  plot = TRUE
+)
+```
+
+###PCA
+```{r}
+logCPM_corrected <- removeBatchEffect(
+  K.log2.cpm.countData.filtered.norm,
+  batch = B.studydesign$batch,
+  covariates = model.matrix(~ sex, data=B.studydesign)[, -1]
+) # also for WGCNA
+
+time <- B.studydesign$time
+time <- factor(time, levels = c("Baseline", "V1D1", "V1D3", "V1D8", "V1D14"))
+
+treatment <- B.studydesign$treatment
+treatment <- factor(treatment)
+
+group <- B.studydesign$group
+group <- factor(group)
+
+L.pca.res.transcript <- prcomp(t(logCPM_corrected), scale.=F, retx=T)
+
+ls(L.pca.res.transcript)
+summary(L.pca.res.transcript)
+screeplot(L.pca.res.transcript)
+M.pc.var.transcript<-L.pca.res.transcript$sdev^2
+N.pc.per.transcript<-round(M.pc.var.transcript/sum(M.pc.var.transcript)*100, 1)
+N.pc.per.transcript
+
+O.pca.res.transcript.df <- data.frame(
+  PC1 = L.pca.res.transcript$x[,1],
+  PC2 = L.pca.res.transcript$x[,2],
+  sample = rownames(L.pca.res.transcript$x)
+)
+O.pca.res.transcript.df <- cbind(
+  O.pca.res.transcript.df,
+  B.studydesign[match(O.pca.res.transcript.df$sample, B.studydesign$label),
+                c("treatment", "group", "time", "sex")]
+)
+
+O.pca.res.transcript.df$time <- factor(
+  O.pca.res.transcript.df$time,
+  levels = c("Baseline", "V1D1", "V1D3", "V1D8", "V1D14")
+)
+ggplot(O.pca.res.transcript.df, aes(PC1, PC2, color = time, shape = sex)) +
+  geom_point(size = 2) +
+  facet_wrap(~ treatment) +
+  xlab(paste0("PC1 (",N.pc.per.transcript[1], "%)")) +
+  ylab(paste0("PC2 (",N.pc.per.transcript[2], "%)")) +
+  labs(title="PCA gene level") +
+  theme_bw()
+
+```
+
+```{r}
+W.fit.countData <- lmFit(
+  v2,
+  design,
+  block = B.studydesign$animal,
+  correlation = corfit$consensus.correlation
+)
+
+X.contrast.matrix <- makeContrasts(
+  C1aP_V1D1 = groupaP_V1D1 - groupaP_Baseline,
+  C2aP_V1D3 = groupaP_V1D3 - groupaP_Baseline,
+  C3aP_V1D8 = groupaP_V1D8 - groupaP_Baseline,
+  C4wP_V1D1 = groupwP_V1D1 - groupwP_Baseline,
+  C5wP_V1D3 = groupwP_V1D3 - groupwP_Baseline,
+  C6wP_V1D8 = groupwP_V1D8 - groupwP_Baseline,
+  C7Baseline_aP_wP = groupwP_Baseline - groupaP_Baseline,
+  C8V1D1_aP_wP = (groupwP_V1D1 - groupwP_Baseline) - (groupaP_V1D1 - groupaP_Baseline),
+  C9V1D3_aP_wP = (groupwP_V1D3 - groupwP_Baseline) - (groupaP_V1D3 - groupaP_Baseline),
+  C10V1D8_aP_wP = (groupwP_V1D8 - groupwP_Baseline) - (groupaP_V1D8 - groupaP_Baseline),
+  C11WT_day3 = groupWT_day3 - groupWT_pre,
+  C12WT_day7 = groupWT_day7 - groupWT_pre,
+  C13WT_day14 = groupWT_day14 - groupWT_pre,
+  C14Baseline_WT_aP = groupWT_pre - groupaP_Baseline,
+  C15V1D3_WT_aP = (groupWT_day3 - groupWT_pre) - (groupaP_V1D3 - groupaP_Baseline),
+  C16V1D8_WT_aP = (groupWT_day7 - groupWT_pre) - (groupaP_V1D8 - groupaP_Baseline),
+  C17Baseline_WT_wP = groupWT_pre - groupwP_Baseline,
+  C18V1D3_WT_wP = (groupWT_day3 - groupWT_pre) - (groupwP_V1D3 - groupwP_Baseline),
+  C19V1D8_WT_wP = (groupWT_day7 - groupWT_pre) - (groupwP_V1D8 - groupwP_Baseline),
+  levels=design)
+
+Y.fits.countData <- contrasts.fit(W.fit.countData, X.contrast.matrix)
+Z.ebFit.countData <- eBayes(Y.fits.countData)
+plotSA(Z.ebFit.countData, main="Final model: Mean-variance trend")
+```
+
+### topTables and annotation
+
+```{r}
+#| echo: true
+#| warning: false
+#| message: false
+
+# Annotation
+baboon.anno <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       # host = "https://may2024.archive.ensembl.org",
+                       dataset = "panubis_gene_ensembl") #Olive baboon genes (Panubis1.0)
+# baboon.filter <- listFilters(baboon.anno)
+# attribute <- listAttributes(baboon.anno)
+top_hits <- topTable(Z.ebFit.countData, adjust = "BH", coef = 1, number = 40000, sort.by = "logFC")
+top_hits$gene_id <- rownames(top_hits)
+
+ensembl_ids <- top_hits$gene_id
+homolog_names <- getBM(attributes = c("ensembl_gene_id", "hsapiens_homolog_associated_gene_name"), 
+                       filters = "ensembl_gene_id",
+                       values = ensembl_ids,
+                       mart = baboon.anno)
+
+homolog_names$hsapiens_homolog_associated_gene_name[homolog_names$hsapiens_homolog_associated_gene_name == ""] <- homolog_names$ensembl_gene_id[homolog_names$hsapiens_homolog_associated_gene_name == ""]
+duplicates <- duplicated(homolog_names$ensembl_gene_id)
+summary(duplicates)
+homolog_names_unique <- homolog_names %>%
+  arrange(ensembl_gene_id, hsapiens_homolog_associated_gene_name) %>% # Sort by ensembl_gene_id and then alphabetically by associated_gene_name
+  distinct(ensembl_gene_id, .keep_all = TRUE)       # Keep the first occurrence of each ensembl_gene_id
+duplicates <- duplicated(homolog_names_unique$ensembl_gene_id)
+summary(duplicates)
+
+for (i in 1:19) {
+  top_hits <- topTable(Z.ebFit.countData, adjust = "BH", coef = i, number = 40000, sort.by = "logFC")
+  top_hits$gene_id <- rownames(top_hits)
+  filename <- paste0("DGEdose1", i, ".csv")
+  write_csv(top_hits, filename)
+  top_hits <- left_join(homolog_names_unique, top_hits, by = c("ensembl_gene_id" = "gene_id"))
+  top_hits <- top_hits %>%
+    dplyr::select(-ensembl_gene_id) %>%
+    mutate(original_order = row_number()) %>%
+    group_by(hsapiens_homolog_associated_gene_name) %>%
+    filter(AveExpr == max(AveExpr)) %>%
+    dplyr::slice(1) %>%
+    ungroup() %>%
+    arrange(original_order) %>%
+    dplyr::select(-original_order)
+  filename <- paste0("DGEdose1_anno", i, ".csv")
+  write_csv(top_hits, filename)
+}
+
+
+```
+
+### term2gene
+
+```{r}
+papio_go_slim <- getBM(attributes = c("ensembl_gene_id", "go_id", "goslim_goa_accession", "goslim_goa_description", "name_1006", "definition_1006", "go_linkage_type","namespace_1003"),
+                       mart = baboon.anno)
+
+gmt_list <- papio_go_slim %>%
+  filter(go_id != "") %>%
+  group_by(goslim_goa_accession, goslim_goa_description, go_id, name_1006, definition_1006, namespace_1003, go_linkage_type)
+
+ensembl_ids <- gmt_list$ensembl_gene_id
+
+homolog_names <- getBM(attributes = c("ensembl_gene_id", "hsapiens_homolog_associated_gene_name"), 
+                       filters = "ensembl_gene_id",
+                       values = ensembl_ids,
+                       mart = baboon.anno)
+
+homolog_names$hsapiens_homolog_associated_gene_name[homolog_names$hsapiens_homolog_associated_gene_name == ""] <- homolog_names$ensembl_gene_id[homolog_names$hsapiens_homolog_associated_gene_name == ""]
+duplicates <- duplicated(homolog_names$ensembl_gene_id)
+summary(duplicates)
+homolog_names_unique <- homolog_names %>%
+  arrange(ensembl_gene_id, hsapiens_homolog_associated_gene_name) %>% 
+  distinct(ensembl_gene_id, .keep_all = TRUE) 
+
+gmt_list <- left_join(homolog_names_unique, gmt_list, by = c("ensembl_gene_id" = "ensembl_gene_id"))
+
+cols <- c("hsapiens_homolog_associated_gene_name", "name_1006")
+term2gene <- gmt_list[, cols, drop = FALSE]
+colnames(term2gene) <- c("gene", "term")
+term2gene <- term2gene[, c("term", "gene")]
+term2gene <- term2gene[term2gene$term != "" & term2gene$gene != "", ]
+term2gene <- unique(term2gene)
+
+```
+
+### GSEA
+
+```{r}
+for (i in 1:19) {
+  ZA <- read_csv(
+    paste0("DGEdose1_anno", i, ".csv")
+  )
+
+  gene_list <- ZA$logFC
+  names(gene_list) <- ZA$hsapiens_homolog_associated_gene_name
+  gene_list <- sort(gene_list, decreasing = TRUE)
+
+  gsea_result <- GSEA(
+    geneList      = gene_list,
+    TERM2GENE     = term2gene,
+    pAdjustMethod = "BH",
+    exponent      = 1,
+    minGSSize     = 5,
+    maxGSSize     = 800,
+    pvalueCutoff  = 1
+  )
+
+  gsea <- as.data.frame(gsea_result@result)
+
+  out_file <- paste0(
+    "gsea", i, ".csv"
+  )
+  
+  write_csv(gsea, out_file)
+
+}
+```
+
+## WGCNA
+```{r}
+ensembl_ids <- rownames(logCPM_corrected)
+logCPM_corrected.df <- as_tibble(logCPM_corrected, rownames = "geneID")
+homolog_names <- getBM(attributes = c("ensembl_gene_id", "hsapiens_homolog_associated_gene_name"), 
+                       filters = "ensembl_gene_id",
+                       values = ensembl_ids,
+                       mart = baboon.anno)
+
+homolog_names$hsapiens_homolog_associated_gene_name[homolog_names$hsapiens_homolog_associated_gene_name == ""] <- homolog_names$ensembl_gene_id[homolog_names$hsapiens_homolog_associated_gene_name == ""]
+duplicates <- duplicated(homolog_names$ensembl_gene_id)
+summary(duplicates)
+homolog_names_unique <- homolog_names %>%
+  arrange(ensembl_gene_id, hsapiens_homolog_associated_gene_name) %>% # Sort by ensembl_gene_id and then alphabetically by associated_gene_name
+  distinct(ensembl_gene_id, .keep_all = TRUE)       # Keep the first occurrence of each ensembl_gene_id
+duplicates <- duplicated(homolog_names_unique$ensembl_gene_id)
+summary(duplicates)
+
+logCPM_corrected.df <- left_join(homolog_names_unique, logCPM_corrected.df, by = c("ensembl_gene_id" = "geneID"))
+
+logCPM_corrected.df <- logCPM_corrected.df %>% dplyr::select(-ensembl_gene_id)
+logCPM_corrected.df$row_sum <- rowSums(logCPM_corrected.df[, -1])
+logCPM_corrected.df <- logCPM_corrected.df %>%
+  group_by(hsapiens_homolog_associated_gene_name) %>%
+  filter(row_sum == max(row_sum)) %>%
+  dplyr::slice(1) %>%  # In case of ties, take the first one
+  ungroup() %>%
+  dplyr::select(-row_sum)  # Remove the temporary row_sum column
+logCPM_corrected.df <- as.data.frame(logCPM_corrected.df)
+rownames(logCPM_corrected.df) <- logCPM_corrected.df[[1]]
+logCPM_corrected.df <- logCPM_corrected.df[, -1]
+```
+
+```{r}
+allowWGCNAThreads()
+logCPM_corrected.mat <- as.matrix(logCPM_corrected.df)
+vars <- rowVars(logCPM_corrected.mat)
+keep_var <- vars > quantile(vars, 0.40)  # top 60% variance
+logCPM_corrected.mat <- logCPM_corrected.mat[keep_var, ]
+logCPM_corrected.mat.df <- as.data.frame(logCPM_corrected.mat)
+
+t.wgcna <- t(logCPM_corrected.mat.df)
+wgcna_design <- B.studydesign
+# detect outliers if any
+# sampleTree <- hclust(dist(t.wgcna), method = "average")
+# plot(sampleTree, main = "Sample clustering", sub="", xlab="", cex.lab = 1.5)
+
+# select power
+power <- c(c(1:10), seq(from = 12, to = 50, by = 2))
+sft <- pickSoftThreshold(t.wgcna,
+                         powerVector = power,
+                         networkType = "signed",
+                         verbose = 5)
+sft.data <- sft$fitIndices
+a1 <- ggplot(sft.data, aes(Power, SFT.R.sq, label = Power)) +
+  geom_point() +
+  geom_text(nudge_y = 0.1) +
+  geom_hline(yintercept = 0.8, color = 'red') +
+  labs(x = 'Power', y = 'Scale free topology model fit, signed R^2') +
+  theme_classic()
+
+a2 <- ggplot(sft.data, aes(Power, mean.k., label = Power)) +
+  geom_point() +
+  geom_text(nudge_y = 0.1) +
+  labs(x = 'Power', y = 'Mean Connectivity') +
+  theme_classic()
+
+plot_grid(a1, a2,
+          labels = c('A', 'B'), label_size = 12, ncol = 1)
+
+soft_power <- 5
+# temp_cor <- cor
+# cor <- WGCNA::cor
+# memory estimate w.r.t blocksize
+bwnet <- blockwiseModules(t.wgcna,
+                          maxBlockSize = 20000,
+                          TOMType = "signed",
+                          power = soft_power,
+                          numericLabels = TRUE,
+                          # deepSplit = 4,      # your setting
+                          minModuleSize = 20, # your setting
+                          mergeCutHeight = 0.42, # your setting (no merging)
+                          randomSeed = 1234,
+                          verbose = 3)
+# cor <- temp_cor
+module_eigengenes <- bwnet$MEs
+table(bwnet$colors)
+custom_order1 <- c("ME0","ME1", "ME2", "ME3", "ME4", "ME5", "ME6", "ME7", "ME8", "ME9", "ME10", "ME11", "ME12")
+module_eigengenes <- module_eigengenes[, custom_order1]
+plotDendroAndColors(bwnet$dendrograms[[1]], cbind(bwnet$unmergedColors, bwnet$colors),
+                    c("unmerged", "merged"),
+                    dendroLabels = FALSE,
+                    addGuide = TRUE,
+                    hang= 0.03,
+                    guideHang = 0.05)
+
+ME.dissimilarity = 1-cor(module_eigengenes, use="complete") #Calculate eigengene dissimilarity
+METree = hclust(as.dist(ME.dissimilarity), method = "average") #Clustering eigengenes 
+par(mar = c(0,4,2,0)) #seting margin sizes
+par(cex = 0.6);#scaling the graphic
+
+plot(METree)
+```
+
+```{r}
+eigengenes_stats <- merge(module_eigengenes, wgcna_design, by = 'row.names')
+
+# Loop for slicing modules
+eigengenes_list <- list()
+for (i in 1:13) {
+  eigengenes_list[[paste0("ME", i-1, "_eigen")]] <- eigengenes_stats[, c(1, i+1, 15:42)]
+}
+
+# Loop for calculationg average for plotting lines
+averages_list <- list()
+for (i in 0:12) {
+  module_name <- paste0("ME", i)
+  if (!is.null(eigengenes_list[[paste0(module_name, "_eigen")]])) {
+    averages_list[[module_name]] <- eigengenes_list[[paste0(module_name, "_eigen")]] %>%
+      group_by(treatment, xy) %>%
+      summarise(mean_value = median(!!sym(module_name)), .groups = 'drop')
+  }
+}
+
+module_colors <- bwnet$colors
+gene_names <- rownames(logCPM_corrected.mat.df)  # Get gene names
+gene_module_df <- data.frame(gene = gene_names, module = module_colors)
+genes_by_module <- split(gene_module_df$gene, gene_module_df$module)
+```
+
+###enricher
+```{r}
+all_enrich_results <- list()
+row_id <- 1
+
+for (i in 0:12) {
+  
+  module_name <- as.character(i)
+  
+  if (!module_name %in% names(genes_by_module)) next
+  
+  module_genes <- genes_by_module[[module_name]]
+  
+  if (length(module_genes) == 0) next
+  
+  ego <- enricher(
+    gene = module_genes,
+    pAdjustMethod = "BH",
+    minGSSize = 5,
+    maxGSSize = 800,
+    pvalueCutoff = 0.05,
+    TERM2GENE = term2gene
+  )
+  
+  if (is.null(ego) || nrow(as.data.frame(ego)) == 0) next
+  
+  ego_df <- as.data.frame(ego)
+  
+  ego_df <- ego_df %>%
+    filter(p.adjust < 0.05) %>%
+    mutate(module = module_name)
+  
+  if (nrow(ego_df) == 0) next
+  
+  all_enrich_results[[row_id]] <- ego_df
+  row_id <- row_id + 1
+}
+
+combined_enrichment <- bind_rows(all_enrich_results)
+
+```
